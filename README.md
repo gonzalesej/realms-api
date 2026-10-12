@@ -1,12 +1,53 @@
-# Beginner FastAPI + SQLite
+# RealMS - Real Estate Management System API
 
-This repository is a starter project for students who want to build their own backend API and database app in Python. It shows the basic pattern for:
+RealMS is a backend API built with FastAPI and SQLite for managing rental properties. It was built from the FastAPI + SQLite boilerplate of the course.
 
-- creating Python classes for request and response data
-- writing SQL queries against SQLite
-- creating REST API endpoints in FastAPI
+## The problem
 
-Use it as a template for your own project. Replace the student example with your own data model, table name, and endpoints.
+Landlords and property managers often track properties, tenants, and rent payments in spreadsheets, chat messages, and paper receipts. Records get out of date: a property is marked as vacant while a tenant lives in it, and a payment is marked as paid without a receipt.
+
+RealMS keeps all of this in one database and enforces the rules in code, so the records stay consistent with each other.
+
+Intended users: property managers and landlords, who run the system, and the tenants whose move-ins and payments are recorded.
+
+## Features
+
+- Properties, tenants, and payments: create, read, update, and delete for each one.
+- Validation: dates must be real, emails must be valid, a lease cannot end before it starts, a payment amount must be above zero, and a payment must belong to the property its tenant rents.
+- Search: find properties by name or location, and tenants by name or email.
+- Move-in workflow: adding a tenant is only allowed for an Available property, and it marks the property as Occupied in the same transaction.
+- Move-out workflow: ending a tenancy makes the tenant Inactive and the property Available again. Deleting an Active tenant frees the property too.
+- Pay-rent workflow: paying a payment marks it Paid, records the date and method, and issues a receipt with the VAT breakdown, all in one transaction. A payment made after its due date is noted as late when it is paid. A paid payment is locked: it cannot be edited, paid twice, or deleted on its own (it is only removed if its tenant or property is deleted).
+- Automatic Overdue status: a Pending payment whose due date has passed is marked Overdue automatically when the server starts, when payments are read, and when a payment is created or updated.
+- Receipts: read-only list of the receipts that were issued.
+
+## Database
+
+Four tables are linked with primary keys and foreign keys. Deleting a parent record removes its child records (ON DELETE CASCADE).
+
+```
+properties 1 --- many tenants
+tenants    1 --- many payments
+properties 1 --- many payments
+payments   1 --- 1 transactions (receipts)
+```
+
+On the first run the app creates `realestate.db` and loads sample records. The sample dates are computed from today's date, so the data always looks current. Delete `realestate.db` and restart to reset the data.
+
+## Project structure
+
+- `main.py` creates the FastAPI app and defines the routes.
+- `app/database.py` opens SQLite connections and creates the tables.
+- `app/models.py` holds the Pydantic classes. Each class also holds the SQL queries of its table.
+- `app/services.py` holds `RentalService`, the class that runs the workflows that touch more than one table.
+- `app/seed.py` holds the sample records.
+
+## OOP in this project
+
+- Classes and inheritance: `PropertyInput` describes the fields sent by a client, and `Property` extends it with an `id`. The same pattern is used for tenants and payments.
+- Encapsulation: each model class keeps the SQL of its own table, and `RentalService` keeps the business rules, the queries that touch more than one table, and the database connection function it was created with.
+- Separation of responsibilities: routes handle requests, models handle one table, and the service handles workflows.
+- Custom exception: `RentalError` represents a broken business rule, and `main.py` turns it into an HTTP error.
 
 ## Run it on Windows
 
@@ -19,154 +60,35 @@ python -m pip install -r requirements.txt
 python -m uvicorn main:app --reload
 ```
 
-Then open <http://127.0.0.1:8000/docs> in your browser. The API docs page will let you try the project without writing a separate client.
+Then open <http://127.0.0.1:8000/docs> in your browser. The API docs page lets you try every endpoint.
 
-## Project structure
+## Endpoints
 
-- `main.py` creates the FastAPI app and defines the routes.
-- `app/database.py` opens SQLite connections and creates tables.
-- `app/models.py` defines the Pydantic data classes.
-- `students.db` is the SQLite database file created the first time the app runs.
+| Method and path | Purpose |
+| --- | --- |
+| `GET /` | Welcome message |
+| `GET /properties` | List properties (`?search=` filters by name or location) |
+| `GET /properties/{property_id}` | Show one property |
+| `POST /property` | Create a property |
+| `PUT /property/{property_id}` | Update a property (Occupied is only set by a move-in) |
+| `DELETE /property/{property_id}` | Delete a property with its tenants and payments |
+| `GET /tenants` | List tenants (`?search=` filters by name or email) |
+| `GET /tenants/{tenant_id}` | Show one tenant |
+| `POST /tenant` | Move a tenant into an Available property |
+| `PUT /tenant/{tenant_id}` | Update a tenant's details |
+| `POST /tenant/{tenant_id}/move-out` | End a tenancy |
+| `DELETE /tenant/{tenant_id}` | Delete a tenant and their payments (frees the property if Active) |
+| `GET /payments` | List payments (late Pending payments are marked Overdue first) |
+| `GET /payments/{payment_id}` | Show one payment |
+| `POST /payment` | Record a payment that is due (must match the tenant's property) |
+| `PUT /payment/{payment_id}` | Update a payment that is not paid yet |
+| `POST /payment/{payment_id}/pay` | Pay a payment and issue a receipt |
+| `DELETE /payment/{payment_id}` | Delete a payment that is not paid yet |
+| `GET /transactions` | List receipts |
+| `GET /transactions/{transaction_id}` | Show one receipt |
 
-## How to make your own classes
+## Try the workflows
 
-The project already uses a simple pattern: a Pydantic model describes the data, and the route functions call helper methods on that model.
-
-Example from `app/models.py`:
-
-```python
-from pydantic import BaseModel, Field
-
-
-class StudentInput(BaseModel):
-    name: str = Field(min_length=1)
-    age: int = Field(ge=0)
-
-
-class Student(StudentInput):
-    id: int
-```
-
-To make your own class for a different project, follow the same pattern:
-
-```python
-from pydantic import BaseModel, Field
-
-
-class CourseInput(BaseModel):
-    title: str = Field(min_length=1)
-    credits: int = Field(ge=0)
-
-
-class Course(CourseInput):
-    id: int
-```
-
-A model class is useful because FastAPI can validate incoming JSON automatically and return the data in a consistent format.
-
-## How to make your own SQL queries
-
-The database connection is managed in `app/database.py`:
-
-```python
-@contextmanager
-def database_connection() -> Iterator[sqlite3.Connection]:
-    connection = sqlite3.connect(DATABASE_FILE)
-    connection.row_factory = sqlite3.Row
-    try:
-        yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-```
-
-Use it like this when you write your own queries:
-
-```python
-with database_connection() as connection:
-    rows = connection.execute(
-        "SELECT id, title, credits FROM courses WHERE id = ?",
-        (course_id,),
-    ).fetchall()
-```
-
-Important ideas:
-
-- `CREATE TABLE` defines a new table.
-- `INSERT` adds rows.
-- `SELECT` reads data.
-- `UPDATE` changes data.
-- `DELETE` removes data.
-- Use `?` placeholders instead of string concatenation to keep SQL safe.
-
-Example table setup:
-
-```python
-connection.execute(
-    """
-    CREATE TABLE IF NOT EXISTS courses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        credits INTEGER NOT NULL CHECK (credits >= 0)
-    )
-    """
-)
-```
-
-## How to make your own endpoints
-
-FastAPI routes live in `main.py`. Each function is connected to an HTTP method and path using decorators like `@app.get`, `@app.post`, `@app.put`, and `@app.delete`.
-
-Example:
-
-```python
-@app.get("/courses")
-def get_courses():
-    result = Course.list_courses(database_connection=database_connection)
-    return {"courses": result}
-
-
-@app.post("/course")
-def create_course(course: CourseInput):
-    result = Course.create_course(
-        course_input=course,
-        database_connection=database_connection,
-    )
-    return {"course": result}
-```
-
-The route function usually does three things:
-
-1. accept a request body or URL parameter
-2. call a SQL query through a model helper
-3. return JSON for the client
-
-## Reuse this pattern for your own project
-
-A good project workflow is:
-
-1. Create a new model class in `app/models.py`.
-2. Add a table in `app/database.py` with `CREATE TABLE IF NOT EXISTS`.
-3. Add SQL helper methods to your model class.
-4. Add a route in `main.py` that calls those helper methods.
-5. Test the endpoint in the Swagger UI at `/docs`.
-
-For example, if your project is about books, students, courses, or games, you can copy this structure and replace `Student` with your own concept. The pattern stays the same even when the data changes.
-
-## Current example endpoints
-
-This starter project already includes these routes:
-
-- `GET /` returns a welcome message
-- `GET /students` lists students
-- `GET /students/{student_id}` gets one student
-- `POST /student` creates a student
-- `PUT /student/{student_id}` updates a student
-- `DELETE /student/{student_id}` deletes a student
-
-Use these as examples when building your own API routes.
-
-
+1. Pay rent: in `/docs`, open `POST /payment/{payment_id}/pay`, use payment `6` (due in 7 days) and send `{"payment_method": "GCash"}`. Then open `GET /transactions` to see the new receipt. Payment `7` is already overdue, so paying it adds the note "Paid N day(s) late." to the payment.
+2. Move in: property `7` is the only Available sample property. Use `POST /tenant` with `"property_id": 7`, and the property becomes Occupied. You can also create more properties with `POST /property`.
+3. Move out: use `POST /tenant/{tenant_id}/move-out`. The property becomes Available again.
